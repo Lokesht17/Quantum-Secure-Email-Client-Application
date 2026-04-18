@@ -46,14 +46,12 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
   }, []);
 
   useEffect(() => {
-    // Restore session on page reload
     supabase.auth.getSession().then(({ data: { session } }) => {
       if (session?.user) {
         fetchAndSetProfile(session.user.id);
       }
     });
 
-    // Listen for auth state changes
     const { data: { subscription } } = supabase.auth.onAuthStateChange((_event, session) => {
       if (session?.user) {
         fetchAndSetProfile(session.user.id);
@@ -69,22 +67,23 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
     email: string,
     password: string
   ): Promise<{ success: boolean; error?: string }> => {
+
+    const { data: profileData } = await supabase
+      .from("profiles")
+      .select("email")
+      .eq("email", email)
+      .single();
+
+    if (!profileData) {
+      return { success: false, error: "not_registered" };
+    }
+
     const { data, error } = await supabase.auth.signInWithPassword({ email, password });
 
     if (error) {
-      if (
-        error.message.toLowerCase().includes("invalid") ||
-        error.message.toLowerCase().includes("credentials")
-      ) {
-        return { success: false, error: "wrong_password" };
-      }
-      if (error.message.toLowerCase().includes("not found")) {
-        return { success: false, error: "not_registered" };
-      }
-      return { success: false, error: error.message };
+      return { success: false, error: "wrong_password" };
     }
 
-    // ✅ Immediately set user — don't wait for onAuthStateChange
     if (data.user) {
       await fetchAndSetProfile(data.user.id);
     }
@@ -97,14 +96,12 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
     email: string,
     password: string
   ): Promise<boolean> => {
-    // Step 1: Create auth user
     const { data, error } = await supabase.auth.signUp({ email, password });
     if (error || !data.user) {
       console.error("Registration error:", error?.message);
       return false;
     }
 
-    // Step 2: Generate Kyber768 keypair
     let publicKey: string | null = null;
     let privateKey: string | null = null;
 
@@ -112,12 +109,10 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
       const keyPair = await generateKyberKeyPair();
       publicKey = keyPair.publicKey;
       privateKey = keyPair.privateKey;
-      console.log("✅ Kyber768 keypair generated successfully");
     } catch (err) {
-      console.warn("Kyber keypair generation failed, continuing without PQC:", err);
+      console.warn("Kyber keypair generation failed:", err);
     }
 
-    // Step 3: Insert profile with public key
     const { error: profileError } = await supabase.from("profiles").insert({
       id: data.user.id,
       full_name: name,
@@ -131,17 +126,14 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
       return false;
     }
 
-    // Step 4: Store private key in localStorage
     if (privateKey && data.user.id) {
       try {
         storePrivateKey(data.user.id, privateKey, password);
-        console.log("✅ Private key stored in localStorage");
       } catch (err) {
         console.warn("Failed to store private key:", err);
       }
     }
 
-    // Step 5: Immediately set user profile
     await fetchAndSetProfile(data.user.id);
 
     return true;
