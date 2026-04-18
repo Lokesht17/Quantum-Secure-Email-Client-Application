@@ -27,7 +27,7 @@ export default function Compose() {
   const [body, setBody] = useState("");
   const [attachments, setAttachments] = useState<File[]>([]);
   const [sending, setSending] = useState(false);
-  const [usingKyber, setUsingKyber] = useState(false); // tracks if Kyber is available
+  const [usingKyber, setUsingKyber] = useState(false);
   const fileInputRef = useRef<HTMLInputElement>(null);
 
   const [showPasswordDialog, setShowPasswordDialog] = useState(false);
@@ -60,7 +60,6 @@ export default function Compose() {
       return;
     }
 
-    // Check if recipient has a Kyber public key
     const { data: profileData } = await supabase
       .from("profiles")
       .select("public_key")
@@ -93,7 +92,7 @@ export default function Compose() {
     setSending(true);
 
     try {
-      // Step 1: Get recipient's full profile (id + public_key)
+      // Step 1: Get recipient's full profile
       const { data: recipientProfile, error: recipientError } = await supabase
         .from("profiles")
         .select("id, public_key")
@@ -106,30 +105,29 @@ export default function Compose() {
         return;
       }
 
-      // Step 2: Encrypt body — Kyber path or AES fallback
+      // Step 2: Encrypt body
       let encryptedBody: string;
       let kyberCiphertext: string | null = null;
 
       if (recipientProfile.public_key) {
-        // ✅ Quantum-secure path — CRYSTALS-Kyber768 + AES-256-GCM
         toast.info("Using CRYSTALS-Kyber quantum-secure encryption... 🔐");
         const result = await kyberEncryptMessage(body, recipientProfile.public_key);
         encryptedBody = result.encryptedBody;
         kyberCiphertext = result.kyberCiphertext;
       } else {
-        // ✅ Fallback — PBKDF2 + AES-256-GCM (existing users without Kyber)
         encryptedBody = await encryptMessage(body, encryptionPassword);
       }
 
+      // ✅ Preview is hidden — never shows real content
       const emailPayload = {
         sender: user.fullName,
         sender_email: user.email,
         recipient: to.trim(),
         subject,
-        preview: body.substring(0, 100), // preview stays readable
-        body: encryptedBody,              // 🔐 encrypted
+        preview: "🔐 Encrypted Message",
+        body: encryptedBody,
         is_encrypted: true,
-        kyber_ciphertext: kyberCiphertext, // null for fallback emails
+        kyber_ciphertext: kyberCiphertext,
         cc: cc || null,
         bcc: bcc || null,
       };
@@ -163,14 +161,20 @@ export default function Compose() {
       // Step 5: Upload attachments and link to both copies
       if (attachments.length > 0) {
         for (const file of attachments) {
-          const path = `${sentEmail.id}/${file.name}`;
+          // ✅ Unique path using timestamp to avoid conflicts
+          const safeName = file.name.replace(/[^a-zA-Z0-9._-]/g, "_");
+          const path = `${sentEmail.id}/${Date.now()}_${safeName}`;
 
           const { error: uploadError } = await supabase.storage
             .from("attachments")
-            .upload(path, file);
+            .upload(path, file, {
+              cacheControl: "3600",
+              upsert: false,
+            });
 
           if (uploadError) {
-            toast.error(`Failed to upload ${file.name}`);
+            console.error("Upload error:", uploadError);
+            toast.error(`Failed to upload ${file.name}: ${uploadError.message}`);
             continue;
           }
 
@@ -181,11 +185,13 @@ export default function Compose() {
             storage_path: path,
           };
 
+          // Link to sender's sent copy
           await supabase.from("email_attachments").insert({
             ...attachmentRow,
             email_id: sentEmail.id,
           });
 
+          // Link to recipient's inbox copy
           await supabase.from("email_attachments").insert({
             ...attachmentRow,
             email_id: inboxEmail.id,
@@ -193,7 +199,6 @@ export default function Compose() {
         }
       }
 
-      // Show success with encryption method used
       if (kyberCiphertext) {
         toast.success("Sent with CRYSTALS-Kyber quantum-secure encryption! ⚛️🔐");
       } else {
@@ -322,6 +327,9 @@ export default function Compose() {
                 >
                   <Paperclip className="w-3 h-3 text-muted-foreground" />
                   <span className="text-foreground">{f.name}</span>
+                  <span className="text-muted-foreground">
+                    ({(f.size / 1024).toFixed(0)}KB)
+                  </span>
                   <button
                     onClick={() => setAttachments((a) => a.filter((_, j) => j !== i))}
                     className="text-muted-foreground hover:text-destructive"
@@ -389,7 +397,6 @@ export default function Compose() {
             </DialogDescription>
           </DialogHeader>
 
-          {/* Encryption pipeline visual */}
           <div className="flex items-center justify-center gap-2 text-xs text-muted-foreground py-1">
             {usingKyber ? (
               <>
